@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StreamLite</title>
+
+<style>
+body { margin:0; font-family:Arial; background:#121212; color:#fff; }
+header { background:#e50914; padding:14px; text-align:center; font-size:22px; }
+
+.container { padding:10px; max-width:900px; margin:auto; }
+
+.search-box { display:flex; gap:8px; }
+input { flex:1; padding:12px; background:#1e1e1e; color:#fff; border:none; border-radius:6px; }
+button { padding:10px; background:#e50914; border:none; color:#fff; border-radius:6px; cursor:pointer; }
+
+/* GRID */
+.grid { display:grid; grid-template-columns: repeat(auto-fill,minmax(120px,1fr)); gap:10px; margin-top:10px; }
+.card { position:relative; }
+.card img { width:100%; border-radius:6px; }
+.playBtn { position:absolute; bottom:5px; left:5px; right:5px; background:rgba(0,0,0,0.7); border:none; color:#fff; padding:6px; border-radius:4px; }
+
+/* CONTROLS */
+.controls {
+  display:flex;
+  gap:6px;
+  margin-top:10px;
+}
+select {
+  flex:1;
+  padding:10px;
+  background:#1e1e1e;
+  color:#fff;
+  border:none;
+  border-radius:6px;
+}
+
+/* MODAL */
+#modal {
+  display:none;
+  position:fixed;
+  top:0; left:0;
+  width:100%; height:100%;
+  background:#000;
+  z-index:999;
+}
+.topbar {
+  display:flex;
+  justify-content:space-between;
+  padding:10px;
+  background:#111;
+}
+.serverList {
+  display:flex;
+  gap:6px;
+  overflow-x:auto;
+}
+.serverList button {
+  background:#333;
+  padding:6px 10px;
+  font-size:12px;
+}
+.closeBtn, .backBtn {
+  background:#e50914;
+  border:none;
+  padding:6px 10px;
+  color:#fff;
+  border-radius:4px;
+  margin-left:5px;
+}
+
+iframe {
+  width:100%;
+  height:90%;
+  border:none;
+}
+</style>
+</head>
+
+<body>
+
+<header>🎬 StreamLite</header>
+
+<div class="container">
+
+  <!-- SEARCH -->
+  <div class="search-box">
+    <input id="searchInput" placeholder="Search...">
+    <button onclick="search()">Search</button>
+  </div>
+
+  <div id="results" class="grid"></div>
+
+  <!-- TV CONTROLS -->
+  <div id="tvControls" class="controls" style="display:none;">
+    <select id="season"></select>
+    <select id="episode"></select>
+    <button onclick="play()">▶ Play</button>
+  </div>
+
+</div>
+
+<!-- PLAYER -->
+<div id="modal">
+  <div class="topbar">
+    <div class="serverList" id="servers"></div>
+    <div>
+      <button class="backBtn" onclick="forceBack()">⏪ Back</button>
+      <button class="closeBtn" onclick="closeModal()">✖</button>
+    </div>
+  </div>
+  <iframe id="player"></iframe>
+</div>
+
+<script>
+let currentId="";
+let currentType="movie";
+let episodesData={};
+let lastSource="";
+let protectionInterval=null;
+
+// SEARCH
+async function search(){
+  const q=document.getElementById("searchInput").value.trim();
+  if(!q) return;
+
+  const res=await fetch(`https://v2.sg.media-imdb.com/suggestion/${q[0].toLowerCase()}/${q}.json`);
+  const data=await res.json();
+
+  const results=document.getElementById("results");
+  results.innerHTML="";
+
+  (data.d||[]).forEach(item=>{
+    if(!item.id) return;
+
+    const div=document.createElement("div");
+    div.className="card";
+
+    div.innerHTML=`
+      <img src="${item.i?.imageUrl||''}">
+      <button class="playBtn">▶ Watch</button>
+    `;
+
+    div.querySelector("button").onclick=()=>loadMeta(item.id);
+
+    results.appendChild(div);
+  });
+}
+
+// LOAD META
+async function loadMeta(imdb){
+  currentId=imdb;
+
+  let res=await fetch(`https://v3-cinemeta.strem.io/meta/movie/${imdb}.json`);
+  let data=await res.json();
+
+  if(!data.meta){
+    res=await fetch(`https://v3-cinemeta.strem.io/meta/series/${imdb}.json`);
+    data=await res.json();
+    currentType="tv";
+  } else currentType="movie";
+
+  if(currentType==="tv"){
+    setupTV(data.meta.videos||[]);
+  } else {
+    document.getElementById("tvControls").style.display="none";
+    play();
+  }
+}
+
+// TV SETUP
+function setupTV(videos){
+  const tv=document.getElementById("tvControls");
+  const season=document.getElementById("season");
+
+  tv.style.display="flex";
+  episodesData={};
+
+  videos.forEach(v=>{
+    if(!episodesData[v.season]) episodesData[v.season]=[];
+    episodesData[v.season].push(v.episode);
+  });
+
+  season.innerHTML="";
+  Object.keys(episodesData).forEach(s=>{
+    let o=document.createElement("option");
+    o.value=s;
+    o.textContent="Season "+s;
+    season.appendChild(o);
+  });
+
+  season.onchange=loadEpisodes;
+  loadEpisodes();
+}
+
+function loadEpisodes(){
+  const s=document.getElementById("season").value;
+  const ep=document.getElementById("episode");
+
+  ep.innerHTML="";
+  (episodesData[s]||[]).forEach(e=>{
+    let o=document.createElement("option");
+    o.value=e;
+    o.textContent="Ep "+e;
+    ep.appendChild(o);
+  });
+}
+
+// PLAY
+function play(){
+  document.getElementById("modal").style.display="block";
+
+  let sources=[];
+
+  if(currentType==="movie"){
+    sources=[
+      {name:"Primary", url:`https://vidsrc.mov/embed/movie/${currentId}`},
+      {name:"Backup 1", url:`https://vidsrc.me/embed/movie/${currentId}`},
+      {name:"Backup 2", url:`https://2embed.cc/embed/${currentId}`}
+    ];
+  } else {
+    const s=document.getElementById("season").value;
+    const e=document.getElementById("episode").value;
+
+    sources=[
+      {name:"Primary", url:`https://vidsrc.mov/embed/tv/${currentId}/${s}/${e}`},
+      {name:"Backup 1", url:`https://vidsrc.me/embed/tv/${currentId}/${s}/${e}`},
+      {name:"Backup 2", url:`https://2embed.cc/embed/${currentId}`}
+    ];
+  }
+
+  buildServers(sources);
+  loadSource(sources[0].url);
+  startProtection();
+}
+
+// BUILD SERVER LIST
+function buildServers(sources){
+  const list=document.getElementById("servers");
+  list.innerHTML="";
+
+  sources.forEach(s=>{
+    const btn=document.createElement("button");
+    btn.textContent=s.name;
+    btn.onclick=()=>loadSource(s.url);
+    list.appendChild(btn);
+  });
+}
+
+// LOAD SOURCE
+function loadSource(url){
+  lastSource=url;
+  document.getElementById("player").src=url;
+}
+
+// BACK
+function forceBack(){
+  if(lastSource){
+    document.getElementById("player").src=lastSource;
+  }
+}
+
+// AUTO PROTECTION
+function startProtection(){
+  clearInterval(protectionInterval);
+
+  protectionInterval=setInterval(()=>{
+    const iframe=document.getElementById("player");
+
+    if(!iframe.src || iframe.src==="about:blank"){
+      iframe.src=lastSource;
+    }
+  },3000);
+
+  window.addEventListener("blur", ()=>{
+    setTimeout(forceBack,1000);
+  });
+}
+
+// CLOSE
+function closeModal(){
+  document.getElementById("modal").style.display="none";
+  document.getElementById("player").src="";
+  clearInterval(protectionInterval);
+}
+</script>
+
+</body>
+</html>
